@@ -167,102 +167,96 @@
 
 
 
-// ... 前面 import 和 middleware 部分保持不變 ...
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const axios = require("axios");
 
-// 1. 建立縣市名稱對照表 (對應前端 select 的 value)
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+const CWA_API_BASE_URL = "https://opendata.cwa.gov.tw/api";
+const CWA_API_KEY = process.env.CWA_API_KEY;
+
+app.use(cors());
+app.use(express.json());
+
+// 縣市對照表 (Key 必須對應前端 Select 的 Value)
 const cityMap = {
-  "kaohsiung": "高雄市",
-  "taipei": "臺北市",
-  "newtaipei": "新北市",
-  "taichung": "臺中市",
-  "tainan": "臺南市",
-  "taoyuan": "桃園市",
-  "keelung": "基隆市",
-  "hsinchu": "新竹市",
-  "pingtung": "屏東縣",
-  "yilan": "宜蘭縣",
-  "hualien": "花蓮縣",
-  "taitung": "臺東縣"
+    "kaohsiung": "高雄市",
+    "taipei": "臺北市",
+    "newtaipei": "新北市",
+    "taichung": "臺中市",
+    "tainan": "臺南市",
+    "taoyuan": "桃園市",
+    "keelung": "基隆市",
+    "hsinchu": "新竹市",
+    "pingtung": "屏東縣",
+    "yilan": "宜蘭縣",
+    "hualien": "花蓮縣",
+    "taitung": "臺東縣"
 };
 
-/**
- * 通用的天氣預報處理器
- */
-const getWeather = async (req, res) => {
-  try {
-    // 2. 從 URL 取得縣市參數 (例如 /api/weather/taipei)
-    const cityParam = req.params.city.toLowerCase();
-    const cityName = cityMap[cityParam];
+// 核心：取得天氣資料的邏輯
+app.get("/api/weather/:city", async (req, res) => {
+    try {
+        const cityParam = req.params.city.toLowerCase();
+        const cityName = cityMap[cityParam];
 
-    if (!cityName) {
-      return res.status(400).json({
-        success: false,
-        message: "不支援的縣市名稱"
-      });
-    }
-
-    if (!CWA_API_KEY) {
-      return res.status(500).json({ error: "請設定 CWA_API_KEY" });
-    }
-
-    // 3. 呼叫 CWA API，將 locationName 設為動態變數
-    const response = await axios.get(
-      `${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-001`,
-      {
-        params: {
-          Authorization: CWA_API_KEY,
-          locationName: cityName, // 動態傳入中文名稱
-        },
-      }
-    );
-
-    const locationData = response.data.records.location[0];
-
-    if (!locationData) {
-      return res.status(404).json({ error: "查無資料" });
-    }
-
-    // --- 以下整理資料的邏輯保持不變 ---
-    const weatherData = {
-      city: locationData.locationName,
-      updateTime: response.data.records.datasetDescription,
-      forecasts: [],
-    };
-
-    const weatherElements = locationData.weatherElement;
-    const timeCount = weatherElements[0].time.length;
-
-    for (let i = 0; i < timeCount; i++) {
-      const forecast = {
-        startTime: weatherElements[0].time[i].startTime,
-        endTime: weatherElements[0].time[i].endTime,
-        weather: "",
-        rain: "",
-        minTemp: "",
-        maxTemp: "",
-      };
-
-      weatherElements.forEach((element) => {
-        const value = element.time[i].parameter;
-        switch (element.elementName) {
-          case "Wx": forecast.weather = value.parameterName; break;
-          case "PoP": forecast.rain = value.parameterName + "%"; break;
-          case "MinT": forecast.minTemp = value.parameterName; break; // 拿掉 °C 讓前端好處理
-          case "MaxT": forecast.maxTemp = value.parameterName; break;
+        if (!cityName) {
+            return res.status(400).json({ success: false, message: "不支援的縣市" });
         }
-      });
-      weatherData.forecasts.push(forecast);
+
+        if (!CWA_API_KEY) {
+            return res.status(500).json({ success: false, message: "API Key 未設定" });
+        }
+
+        const response = await axios.get(`${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-001`, {
+            params: {
+                Authorization: CWA_API_KEY,
+                locationName: cityName,
+            },
+        });
+
+        const locationData = response.data.records.location[0];
+        if (!locationData) throw new Error("CWA 返回空資料");
+
+        // 整理格式
+        const weatherData = {
+            city: locationData.locationName,
+            forecasts: []
+        };
+
+        const elements = locationData.weatherElement;
+        const timeCount = elements[0].time.length;
+
+        for (let i = 0; i < timeCount; i++) {
+            const forecast = {
+                startTime: elements[0].time[i].startTime,
+                weather: "",
+                rain: "",
+                minTemp: "",
+                maxTemp: ""
+            };
+
+            elements.forEach(el => {
+                const val = el.time[i].parameter.parameterName;
+                if (el.elementName === "Wx") forecast.weather = val;
+                if (el.elementName === "PoP") forecast.rain = val + "%";
+                if (el.elementName === "MinT") forecast.minTemp = val;
+                if (el.elementName === "MaxT") forecast.maxTemp = val;
+            });
+            weatherData.forecasts.push(forecast);
+        }
+
+        res.json({ success: true, data: weatherData });
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: "伺服器錯誤" });
     }
+});
 
-    res.json({ success: true, data: weatherData });
+app.get("/", (req, res) => res.send("Weather API is running!"));
 
-  } catch (error) {
-    console.error("API 錯誤:", error.message);
-    res.status(500).json({ success: false, message: "伺服器錯誤" });
-  }
-};
-
-// 4. 修改路由：使用 :city 動態路徑
-app.get("/api/weather/:city", getWeather);
-
-// ... 後面 listen 部分保持不變 ...
+app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
