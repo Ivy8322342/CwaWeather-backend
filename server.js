@@ -173,11 +173,28 @@ const cors = require("cors");
 const axios = require("axios");
 
 const app = express();
+// 修正點 1: Zeabur 必須使用 process.env.PORT，並建議監聽 0.0.0.0
 const PORT = process.env.PORT || 3000;
 
 // CWA API 設定
 const CWA_API_BASE_URL = "https://opendata.cwa.gov.tw/api";
 const CWA_API_KEY = process.env.CWA_API_KEY;
+
+// 修正點 2: 新增縣市對照表，將前端傳來的英文 ID 轉換為氣象署需要的中文名稱
+const cityMap = {
+  "kaohsiung": "高雄市",
+  "taipei": "臺北市",
+  "newtaipei": "新北市",
+  "taichung": "臺中市",
+  "tainan": "臺南市",
+  "taoyuan": "桃園市",
+  "keelung": "基隆市",
+  "hsinchu": "新竹市",
+  "pingtung": "屏東縣",
+  "yilan": "宜蘭縣",
+  "hualien": "花蓮縣",
+  "taitung": "臺東縣"
+};
 
 // Middleware
 app.use(cors());
@@ -185,50 +202,56 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 /**
- * 取得高雄天氣預報
- * CWA 氣象資料開放平臺 API
- * 使用「一般天氣預報-今明 36 小時天氣預報」資料集
+ * 取得天氣預報 (通用版本)
+ * 改良自你原本的 getKaohsiungWeather
  */
-const getKaohsiungWeather = async (req, res) => {
+const getWeather = async (req, res) => {
   try {
-    // 檢查是否有設定 API Key
-    if (!CWA_API_KEY) {
-      return res.status(500).json({
-        error: "伺服器設定錯誤",
-        message: "請在 .env 檔案中設定 CWA_API_KEY",
+    // 修正點 3: 從網址路徑取得 city 參數 (例如 /api/weather/taipei)
+    const cityId = req.params.city ? req.params.city.toLowerCase() : "kaohsiung";
+    const cityName = cityMap[cityId];
+
+    if (!cityName) {
+      return res.status(400).json({
+        error: "不支援的縣市名稱",
+        message: "請確認前端傳遞的縣市 ID 是否正確"
       });
     }
 
-    // 呼叫 CWA API - 一般天氣預報（36小時）
-    // API 文件: https://opendata.cwa.gov.tw/dist/opendata-swagger.html
+    if (!CWA_API_KEY) {
+      return res.status(500).json({
+        error: "伺服器設定錯誤",
+        message: "請在 Zeabur 的環境變數中設定 CWA_API_KEY",
+      });
+    }
+
+    // 修正點 4: 呼叫 CWA API，將 locationName 設為動態變數 cityName
     const response = await axios.get(
       `${CWA_API_BASE_URL}/v1/rest/datastore/F-C0032-001`,
       {
         params: {
           Authorization: CWA_API_KEY,
-          locationName: "高雄市",
+          locationName: cityName,
         },
       }
     );
 
-    // 取得高雄市的天氣資料
     const locationData = response.data.records.location[0];
 
     if (!locationData) {
       return res.status(404).json({
         error: "查無資料",
-        message: "無法取得高雄市天氣資料",
+        message: `無法取得 ${cityName} 的天氣資料`,
       });
     }
 
-    // 整理天氣資料
+    // 整理天氣資料 (保持你原本喜歡的資料結構)
     const weatherData = {
       city: locationData.locationName,
       updateTime: response.data.records.datasetDescription,
       forecasts: [],
     };
 
-    // 解析天氣要素
     const weatherElements = locationData.weatherElement;
     const timeCount = weatherElements[0].time.length;
 
@@ -277,20 +300,9 @@ const getKaohsiungWeather = async (req, res) => {
     });
   } catch (error) {
     console.error("取得天氣資料失敗:", error.message);
-
-    if (error.response) {
-      // API 回應錯誤
-      return res.status(error.response.status).json({
-        error: "CWA API 錯誤",
-        message: error.response.data.message || "無法取得天氣資料",
-        details: error.response.data,
-      });
-    }
-
-    // 其他錯誤
     res.status(500).json({
       error: "伺服器錯誤",
-      message: "無法取得天氣資料，請稍後再試",
+      message: error.message,
     });
   }
 };
@@ -299,19 +311,17 @@ const getKaohsiungWeather = async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     message: "歡迎使用 CWA 天氣預報 API",
-    endpoints: {
-      kaohsiung: "/api/weather/kaohsiung",
-      health: "/api/health",
-    },
+    status: "Service is online"
   });
 });
 
+// 修正點 5: 將路由改為動態路徑 :city
+app.get("/api/weather/:city", getWeather);
+
+// 原本的 Health Check 保留
 app.get("/api/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
-
-// 取得高雄天氣預報
-app.get("/api/weather/kaohsiung", getKaohsiungWeather);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -322,17 +332,8 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({
-    error: "找不到此路徑",
-  });
+// 修正點 6: 監聽 0.0.0.0 以確保在雲端平台上能被正確訪問
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 伺服器運行中`);
+  console.log(`📍 連接埠: ${PORT}`);
 });
-
-app.listen(PORT, () => {
-  console.log(`🚀 伺服器運行已運作`);
-  console.log(`📍 環境: ${process.env.NODE_ENV || "development"}`);
-});
-
-
-
